@@ -7,9 +7,10 @@
 | **Production target** | https://avazkhoneh.com — DigitalOcean droplet, Ubuntu 24.04, nginx + Node 22 + SQLite (per `docs/DEPLOY.md`) |
 | **Audit environment** | Remote sandbox (4 vCPU Xeon @ 2.8 GHz, 16 GB RAM), Node 22.22, Chromium 1194 (headless), no GPU, no Python pipeline |
 | **Method** | Full read of server and client source; 305 server + 143 client automated tests; an isolated instance with six synthesized songs exercised through 108 API checks, 20 job-lifecycle / crash checks, 59 browser captures with axe-core scans; a load matrix of 17 runs against a production-mode instance pinned to one CPU core |
+| **Revision** | 1.1, same day — production reachability re-checked at the founder's request; DNS evidence added (§3.4); S-1 / B-27 upgraded from conditional to confirmed; B-33 added |
 
 > **Read this first — what this report could and could not verify.**
-> 1. **Production was unreachable from the audit sandbox.** Every path to `avazkhoneh.com` (curl through the egress proxy, the WebFetch tool) is blocked by the sandbox's network policy, and the sandbox has no `ssh` binary. Every statement about production in this report is therefore derived from the repository (deployment runbook, systemd unit, nginx site file, commit history, the SEO monitor's live-check logs of 2026-09-11/12, and the overnight reports in `docs/reports/`). Each such statement is marked **[unverified on the box]** and the exact command to confirm it is given.
+> 1. **Production was unreachable over HTTP from the audit sandbox, and this was re-checked at the founder's request after the first edition — same result.** The sandbox's egress proxy denies `avazkhoneh.com` (a 403 policy denial on the HTTPS CONNECT and on plain HTTP), the WebFetch tool reports `EGRESS_BLOCKED` for the domain, and the sandbox has no `ssh` binary. DNS resolution does work, and it settled one question: the domain resolves to Cloudflare anycast addresses, so the zone is proxied (§3.4). A single direct TCP probe outside the proxy reached Cloudflare's edge and got HTTP 403 for a plain `curl`; it was not repeated, because the environment's network policy denies the host and this audit does not route around policy. Every other statement about production is derived from the repository (deployment runbook, systemd unit, nginx site file, commit history, the SEO monitor's live-check logs of 2026-09-11/12 and the overnight reports in `docs/reports/`), is marked **[unverified on the box]**, and comes with the exact command to confirm it (Appendix B). To let a future session verify production directly, add `avazkhoneh.com` to the environment's allowed domains (Claude Code on the web → environment → network policy; see https://code.claude.com/docs/en/claude-code-on-the-web).
 > 2. **The commit running on production cannot be confirmed.** The last documented deploy is `91acbfd` (2026-09-11, confirmed live by the SEO check at 2026-09-12 00:27 CEST). Sixteen commits have landed since, including the owner's Studio, the stage settings menu and the new avatars. Whether they are deployed is unknown.
 > 3. **Load numbers are measured on the sandbox, not on the droplet.** The API was run in production mode pinned to a single Xeon core with the systemd default file-descriptor limit, so results are comparable to a 1-vCPU machine in shape, but a DigitalOcean Basic shared vCPU is slower. Every capacity figure states the derating assumption used. **Measured** and **Estimated** are labelled separately throughout.
 > 4. **The audio pipeline (Demucs, alignment, pitch) was faked**, because the sandbox has no GPU and no `.venv`. Job state transitions, failure handling and crash recovery were tested against the fake; the real models' timings are quoted from the repository's own benchmarks.
@@ -45,7 +46,7 @@ Appendix A — Test inventory and raw evidence · Appendix B — Commands to ver
 
 **Overall health: a well-built, fast-moving young product (165 commits in 12 days) that is functionally sound for its current small audience, with three data-loss paths and a handful of configuration ceilings that should be closed before it grows.**
 
-**What was verified.** All 305 server tests and 143 client tests pass. On an isolated copy of the system, 108 API checks, 20 job/crash checks, 59 browser captures, the repository's own end-to-end scored karaoke run, and a 17-run load matrix on a single CPU core all ran. Production itself could not be reached from the audit sandbox (network policy, no SSH); every production statement is marked and comes with a one-line command to confirm it on the box.
+**What was verified.** All 305 server tests and 143 client tests pass. On an isolated copy of the system, 108 API checks, 20 job/crash checks, 59 browser captures, the repository's own end-to-end scored karaoke run, and a 17-run load matrix on a single CPU core all ran. Production itself could not be reached over HTTP from the audit sandbox (network policy, no SSH), on the first attempt or on the re-check; DNS did resolve and confirms Cloudflare in front (§3.4). Every other production statement is marked and comes with a one-line command to confirm it on the box.
 
 **Most serious problems (fix this week):**
 
@@ -53,13 +54,13 @@ Appendix A — Test inventory and raw evidence · Appendix B — Commands to ver
 2. **Permanent delete works on live songs**: one call destroys the audio, lyrics, comments and snapshots of a song that is not in the trash and leaves a zombie catalogue row — measured (B-2).
 3. **Production-only data is unprotected**: lyric edits made on the live server exist only on that disk inside a git working tree (one live song is not in git at all), the SQLite database and its backups share the same disk, and audio is never backed up server-side (B-3, S-14).
 4. **Two capacity ceilings in configuration, not code**: the service runs with 1,024 file descriptors, so ~500 simultaneous song downloads start failing (measured: 6.6 % errors at 600 streams), and nginx proxies every audio byte through Node instead of serving files itself (B-32, C-1).
-5. **If Cloudflare proxies the domain — the live `robots.txt` strongly suggests it does — the login/register rate limiter keys on Cloudflare's IPs**, which will lock innocent users out as traffic grows (S-1, verify with one `curl`).
+5. **Cloudflare proxies the domain (confirmed by DNS on the re-check), and neither the repository's nginx config nor the API restores the real client IP, so the login/register rate limiter keys on Cloudflare's edge IPs** and will lock innocent users out as traffic grows (S-1). The only remaining escape is a live nginx that differs from the repository — one `grep` on the box settles it (Appendix B).
 
 **Current estimated safe capacity (today's 1 vCPU / 1 GB droplet, before the fixes):** roughly **1,200–1,500 concurrent active users** of a realistic mix (browsing, singing, commenting, editing) with sub-20 ms API latency; degradation at ~2,500–3,000; **~400–500 simultaneous "press play" is where users first see errors**; **~3 sign-ins per second** saturates the CPU (bcrypt in JavaScript); ~150 people singing all day exhaust the 1 TB monthly transfer allowance. Registered users and daily actives are not the constraint — bandwidth cost and simultaneous spikes are.
 
 **First bottleneck under growth:** a simultaneous-play spike hitting the file-descriptor and nginx connection limits, followed by outbound bandwidth cost; for a sign-up wave, bcrypt CPU.
 
-**Is production safe and stable today?** For its current traffic, yes: crash recovery, job-state recovery, SQLite durability, log redaction, authorization and CSRF/XSS posture all checked out. It is **not yet safe against operator mistakes and machine loss** (items 1–3), and it carries a **conditional High** (item 5) that can be confirmed or dismissed in a minute.
+**Is production safe and stable today?** For its current traffic, yes: crash recovery, job-state recovery, SQLite durability, log redaction, authorization and CSRF/XSS posture all checked out. It is **not yet safe against operator mistakes and machine loss** (items 1–3), and item 5 is now a confirmed High as far as it can be seen from outside (Cloudflare in front, no real-IP handling in the repository), fixable with a few nginx lines (§19).
 
 **Five most important next actions:**
 1. Apply the one-line infrastructure fixes: `LimitNOFILE=65536`, serve `/audio` from nginx with cache headers, nginx `worker_connections`, real client IP behind Cloudflare, commit hash in `/api/health`.
@@ -79,7 +80,7 @@ Appendix A — Test inventory and raw evidence · Appendix B — Commands to ver
 | Web client | React 18 + Vite 5 + Tailwind, single JS bundle (653 KB minified / 195 KB gzip), prerendered HTML per public URL (`tools/seo/prerender.mjs`) | Built on the droplet (`npm run build`), served by nginx from `client/dist` | No route-level code splitting; the login page ships the whole app (editor, studio, both players) |
 | API | Node 22 + Express 4, single process, `node:sqlite` (synchronous), pino logging, helmet, express-rate-limit | Droplet, systemd unit `avazkhoneh.service`, bound to 127.0.0.1:4000 | One event loop does everything: auth (bcryptjs in pure JS), catalogue, comments, analytics, **and streaming every audio file** (`express.static` on `/audio`) |
 | Reverse proxy / TLS | nginx (Ubuntu package), certbot | Droplet | Proxies `/api/` and `/audio/` to Node; serves static build; `client_max_body_size 150M` |
-| Edge | Cloudflare **[very likely, see §3.4]** | — | The live `robots.txt` carries Cloudflare's managed AI-crawler blocks, which only appear on proxied zones |
+| Edge | Cloudflare, proxied zone (**confirmed by DNS**, §3.4) | Cloudflare anycast | `avazkhoneh.com` resolves to Cloudflare addresses, so every visitor's request reaches nginx from a Cloudflare edge; the live `robots.txt` also carries Cloudflare's managed AI-crawler blocks |
 | Database | SQLite file `server/data/avazkhoone.db`, WAL mode, schema created/migrated on boot with `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE` checks | Droplet disk | 15 tables; indexes on the hot paths (plays, scores, comments, reports) |
 | Loose-file state | Lyric documents `server/songs/*.json` (tracked in git), pitch drafts `server/dev-data/pitch-drafts/*.json` (git), audio `server/public/audio/*` (**not** in git), F0 caches, uploads | Droplet disk + founder's machine | The catalogue's truth is split between SQLite (status, approvals, licence) and JSON files (words, timings) |
 | Audio processing pipeline | Python: Demucs (htdemucs), torchaudio MMS forced alignment, faster-whisper (fallback), SwiftF0/RMVPE pitch, ffmpeg | **Founder's Windows PC with an RTX 4070 only.** Not installed on the droplet by design (`docs/DEPLOY.md`) | Production answers 503 to uploads; finished files are copied up with scp/rsync |
@@ -91,7 +92,7 @@ Appendix A — Test inventory and raw evidence · Appendix B — Commands to ver
 
 ```mermaid
 flowchart LR
-  B[Browser<br/>React SPA] -->|HTTPS| CF[Cloudflare edge<br/>likely proxied]
+  B[Browser<br/>React SPA] -->|HTTPS| CF[Cloudflare edge<br/>proxied, DNS-confirmed]
   CF --> N[nginx<br/>TLS, static client/dist]
   N -->|/api/*  new TCP conn per request| A[Node + Express<br/>single process, 127.0.0.1:4000]
   N -->|/audio/*  proxied, not served by nginx| A
@@ -161,7 +162,7 @@ To confirm on the box: `cd /var/www/avazkhoneh && git rev-parse --short HEAD && 
 | Audio | Origin files on the founder's PC; stems produced there | Copied up by scp | The server never backs up audio; the founder's PC is the only origin |
 | Audio pipeline | Present (`.venv`, CUDA) | Absent: uploads return 503, lyric saves return `pitchSync: "unavailable"` | A manager editing on production can never rebuild pitch; the song sits `pitch_stale` until the founder re-runs it locally and copies the draft |
 | `NODE_ENV` | `development` (loopback CORS allowed, cookies not `Secure`) | `production` (`Secure` cookies) | Fine |
-| Rate limiter identity | `req.ip` = the client | `trust proxy 1` behind nginx → the connecting IP as seen by nginx — **which is Cloudflare's if the zone is proxied** | See S-1 |
+| Rate limiter identity | `req.ip` = the client | `trust proxy 1` behind nginx → the connecting IP as seen by nginx — **which is Cloudflare's, because the zone is proxied (§3.4)** | See S-1 |
 | Client flags | `VITE_STAGE_V4`/`VITE_SCORING_ENABLED` unset | Same (per `docs/DEPLOY.md`) | Managers test one player, users get another; the frozen `PlayerClassic` is what the public actually uses |
 | nginx config | `deploy/nginx.conf` (no TLS block) | Certbot-edited live file (TLS added) | Documented ("edit the live file, never copy this one over it"); the repo copy is no longer the source of truth |
 | Node version | README assumes Node 24 locally | Node 22 (nodesource) | `node:sqlite` is experimental in both; behaviour identical in tests |
@@ -175,11 +176,27 @@ To confirm on the box: `cd /var/www/avazkhoneh && git rev-parse --short HEAD && 
 3. **Deploy = `git pull` + `npm ci` + `npm run build` + `systemctl restart`**, by hand, with no health check afterwards and no rollback step. The unit restarts on failure, but a bad build simply serves a broken page.
 4. **Backups exist only if the cron line was added** (`0 3 * * * … backup-db.js`). The Studio shows "آخرین پشتیبان: هرگز" when none exist — the owner should check that page once. **[unverified on the box]**
 
-### 3.4 Is Cloudflare in front? (important for §7)
+### 3.4 Is Cloudflare in front? — Yes (confirmed by DNS on the re-check)
 
-The live `robots.txt` recorded on 2026-09-12 (`docs/reports/seo/2026-09-12.json`) contains nine `Disallow: /` entries in addition to the app's own five paths. The app's prerender writes only the five; the nine extra blocks match Cloudflare's *managed robots.txt* (AI-crawler blocks), which Cloudflare injects only on **proxied** zones. `server/src/index.js` also mentions traffic arriving "around Cloudflare". This report therefore treats the zone as proxied (**high confidence, unverified**). Confirm with `dig +short avazkhoneh.com` (Cloudflare IP ranges → proxied) or by checking for the `cf-ray` response header.
+The first edition inferred it from the live `robots.txt` recorded on 2026-09-12 (`docs/reports/seo/2026-09-12.json`), which carries nine `Disallow: /` entries beyond the app's own five — Cloudflare's *managed robots.txt*, injected only on proxied zones. On the re-check the sandbox's resolver answered directly (DNS lookups are not subject to the HTTP egress policy):
 
-If proxied, three things follow: the API's rate limiters key on Cloudflare edge IPs (S-1), the Node logs record edge IPs rather than users, and — positively — Cloudflare could cache every song file at the edge for free if the origin sent a cache lifetime (today it sends `max-age=0`, so nothing is cached; see §15).
+| Record | Answer | Owner of the address |
+|---|---|---|
+| `A avazkhoneh.com` | `104.21.37.187`, `172.67.212.104` | Cloudflare (`104.16.0.0/13`, `172.64.0.0/13`) |
+| `AAAA avazkhoneh.com` | `2606:4700:3030::ac43:d468`, `2606:4700:3037::6815:25bb` | Cloudflare (`2606:4700::/32`) |
+
+A DNS-only ("grey cloud") record returns the droplet's own address; Cloudflare anycast addresses are returned only for proxied ("orange cloud") records. **The zone is proxied — confirmed.** A single direct probe from the sandbox (a datacenter IP, plain `curl`, no browser headers) was then answered with HTTP 403 by the Cloudflare edge, which is how Bot Fight Mode or a WAF rule behaves; it was not investigated further (see the note at the top of this report).
+
+What follows from Cloudflare being in front:
+
+1. **The API's rate limiters key on Cloudflare edge IPs — S-1 is now High, not conditional.** `deploy/nginx.conf` has no `set_real_ip_from` / `real_ip_header` lines, so nginx appends the edge IP to `X-Forwarded-For`, and `trust proxy 1` in `index.js:48` makes Express take that last hop as `req.ip`. Only a live nginx that differs from the repository would change this; `grep -r real_ip /etc/nginx/` on the box settles it.
+2. **Node's logs and the abuse trail record edge IPs, not visitors** — same cause, same fix.
+3. **Audio is not cached at the edge today.** Cloudflare's default cache stores common static extensions (MP3 is on its documented default list) only when the origin's `Cache-Control` allows it, and its documentation says it does not cache `max-age=0` — which is exactly what `express.static` sends for `/audio` (C-1). Every play therefore comes from the droplet through Node. A positive `max-age` (§19 item 1) would move most audio bytes to Cloudflare at no cost; confirm afterwards with `curl -sI …/audio/<file>.mp3 | grep -i cf-cache-status` (expect `HIT` on the second request).
+4. **Uploads above 100 MB fail at the edge, not in the app.** Cloudflare's request-body limit on the Free and Pro plans is 100 MB; the app and nginx allow 150 MB (`routes/dev.js:69`, `deploy/nginx.conf:36`). Today's songs are 6–13 MB, so this is a documentation mismatch rather than a live problem (B-33).
+5. **Requests are capped at ~100 s** by Cloudflare's origin-response timeout (error 524). No request in the app is synchronous for that long — the upload returns after the copy and the job runs in the background — so nothing is affected today; remember it before adding any synchronous processing endpoint.
+6. **External monitors and scripts from cloud IPs may be blocked** the way the audit's probe was. When adding an uptime checker (§16), allow it in Cloudflare (most well-known checkers are on Cloudflare's verified-bot list; a custom checker needs a WAF skip rule).
+
+Still unverified on the box: the Cloudflare plan and its cache, WAF and SSL-mode settings; whether the origin's ports 80/443 are restricted to Cloudflare's ranges; and whether the live nginx matches the repository.
 
 
 ## 4. Functional Audit
@@ -446,7 +463,7 @@ No secrets are reproduced here. The sandbox could not inspect the production `.e
 
 | ID | Severity | Finding | Evidence | Impact | Recommendation | Priority |
 |---|---|---|---|---|---|---|
-| S-1 | **High** (conditional) | **If Cloudflare proxies the zone (§3.4), `trust proxy 1` makes `req.ip` the Cloudflare edge IP for every visitor.** The auth limiter (10 / 15 min), the contact limiter, the comment and event limiters then share a handful of buckets across all users; the logs record edge IPs | `index.js:48`, `auth.js:34-41`; live `robots.txt` evidence | As traffic grows, innocent users get "Too many attempts" on login and register (a site-wide lockout every time ten people mistype a password within 15 minutes behind the same edge), and abuse investigations have no client IPs | **[verify]** `curl -sI https://avazkhoneh.com \| grep -i cf-ray`. If proxied: set nginx `real_ip_header CF-Connecting-IP` with Cloudflare's IP ranges and keep `trust proxy 1`, or read `cf-connecting-ip` in a `keyGenerator`. Also restrict port 80/443 to Cloudflare ranges so the origin cannot be reached around the edge | Now |
+| S-1 | **High** | **Cloudflare proxies the zone (DNS-confirmed, §3.4) and nothing restores the real client IP, so `trust proxy 1` makes `req.ip` the Cloudflare edge IP for every visitor.** The auth limiter (10 / 15 min), the contact limiter, the comment and event limiters share a handful of buckets across all users; the logs record edge IPs | `index.js:48`, `auth.js:34-41`; `deploy/nginx.conf` has no `set_real_ip_from` / `real_ip_header`; DNS → Cloudflare anycast; live `robots.txt` | As traffic grows, innocent users get "Too many attempts" on login and register (a site-wide lockout every time ten people mistype a password within 15 minutes behind the same edge), and abuse investigations have no client IPs | In nginx: `set_real_ip_from` for Cloudflare's published ranges + `real_ip_header CF-Connecting-IP`, keep `trust proxy 1` (or read `cf-connecting-ip` in a `keyGenerator`); restrict ports 80/443 to Cloudflare's ranges so the origin cannot be reached around the edge. **[verify on the box]** only that the live nginx has no real-IP lines either: `grep -r real_ip /etc/nginx/` | Now |
 | S-2 | Medium | No server-side session revocation: logout and password reset leave issued JWTs valid for up to 30 days; a stolen cookie survives a password change | AUTH-18/19 | A compromised device stays logged in after the user "logs out everywhere" by changing the password | Add `users.token_version` (bump on reset/logout-all) and embed it in the JWT; or a `sessions` table | Soon |
 | S-3 | Medium | Every audio asset, including the 30–70 MB analysis-grade `*-vocals-isolated.wav` stems, is publicly downloadable without authentication, referer check or rate limit | `index.js:81`, `assetPaths.js:46`, SONG-06 | Licensed masters and clean vocal stems are one URL away (licensing exposure); bandwidth abuse by hot-linking or scripted download | Move `-vocals-isolated.wav` out of `public/audio` (it is pipeline input, never played); when audio moves to nginx/CDN add `valid_referers`/signed URLs if the licence terms require it | Soon |
 | S-4 | Medium | The HTML origin carries no security headers: nginx serves `index.html` and the prerendered pages without CSP, `X-Frame-Options`, `Referrer-Policy`, and HSTS depends on how certbot was run | `deploy/nginx.conf` has no `add_header`; helmet covers only `/api` and `/audio` | Clickjacking and XSS blast radius are unmitigated on the pages users actually see | `add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; media-src 'self'; font-src 'self'; connect-src 'self'"` (adjust for Google OAuth redirect), `X-Frame-Options DENY`, `Referrer-Policy strict-origin-when-cross-origin`, `Strict-Transport-Security` | Soon |
@@ -466,11 +483,11 @@ No secrets are reproduced here. The sandbox could not inspect the production `.e
 
 | Scenario | Today | Mitigation |
 |---|---|---|
-| Credential stuffing | 10/15 min per IP (or per Cloudflare edge, S-1); no account lockout | Fix S-1; add per-account soft lockout after 20 failures/hour |
+| Credential stuffing | 10/15 min per Cloudflare edge today (S-1), not per visitor; no account lockout | Fix S-1; add per-account soft lockout after 20 failures/hour |
 | Comment spam | Verified email required, 20/10 min per IP, profanity filter, managers can delete | Adequate for launch |
 | Report flooding | 5/hour per account, 20/hour per IP, duplicate suppression | Adequate |
 | Contact-form spam | 5/15 min per IP, no CAPTCHA, each message triggers two emails | Add a honeypot field; cap emails per hour |
-| Registration flooding | 10/15 min per IP; each registration sends an email via Resend | Fine unless S-1 applies (then the limiter is site-wide) |
+| Registration flooding | 10/15 min per IP; each registration sends an email via Resend | Site-wide today because of S-1; per-visitor once S-1 is fixed |
 | Hot-linking / scraping audio | Nothing | S-3 |
 | Fake scores | Client-trusted by design; scoring hidden from the public | Server-side validation before leaderboards |
 | Malicious upload | Manager-only; extension check; pipeline on the founder's PC | S-5 |
@@ -729,7 +746,7 @@ Ordered by when they are hit, on today's configuration.
 | 1 | **File-descriptor limit (1,024)** — *measured* | systemd default; two fds per audio stream through Node | ~450–500 simultaneous song downloads (a shared link, a live event, a viral moment) | Process fds → `EMFILE`, 500s and dropped connections | `LimitNOFILE=65536` (raises it to ~30k streams); serving audio from nginx removes Node from the path entirely |
 | 2 | **nginx connection budget** — *unverified default* | Ubuntu's `worker_connections 768`, one worker on one vCPU, two connections per proxied request, keep-alive holds idle browser connections for 65 s | ~350–400 concurrent proxied downloads, or ~700 idle keep-alive browsers | nginx refuses connections ("worker_connections are not enough") | `worker_connections 8192; worker_rlimit_nofile 16384;` and stop proxying `/audio` |
 | 3 | **Login CPU (bcryptjs)** — *measured* | Pure-JS bcrypt at cost 12 ≈ 210 ms of the one core per login/register | > ~3 sign-ins per second sustained (a launch, a school, a TV mention) | CPU; the event loop blocks in slices, so every request slows | Native `bcrypt`/`argon2` (threadpool) and/or cost 10 (4× cheaper); a 2-vCPU droplet doubles it |
-| 4 | **Outbound bandwidth and the transfer allowance** — *estimated* | Every play moves 6–13 MB from the droplet; nothing is cached at the edge (`max-age=0`) | ~3,000–4,000 singing DAU exhaust 1 TB/month (overage $0.01/GB); ~1,000 concurrent singers need ~330 Mbit/s sustained | Transfer bill first, NIC second | Cache headers + Cloudflare (edge bandwidth is free on the free plan), or Spaces + CDN |
+| 4 | **Outbound bandwidth and the transfer allowance** — *estimated* | Every play moves 6–13 MB from the droplet; Cloudflare is in front but caches none of it because the origin sends `max-age=0` | ~3,000–4,000 singing DAU exhaust 1 TB/month (overage $0.01/GB); ~1,000 concurrent singers need ~330 Mbit/s sustained | Transfer bill first, NIC second | Cache headers + Cloudflare (edge bandwidth is free on the free plan), or Spaces + CDN |
 | 5 | **Single API core for everything** — *measured knee at ~1,000 mixed VUs* | One Node process streams audio, hashes passwords, answers JSON and runs Studio SQL | ~2,500–3,000 real concurrent mixed users (derated) | CPU; writes (`POST /plays`, `/scores`, editor saves) queue first | Move audio off Node (removes ~40 % of the load in the mixed profile), then a 2–4 vCPU droplet; Node stays single-threaded so beyond that a second instance + Postgres |
 | 6 | **Request logging volume** — *measured* | ~1 KB per request written to disk twice (file + journald) | ~1 M requests/day ≈ 1 GB/day; 14-day retention ≈ 14 GB on a 25 GB disk shared with audio and backups | Disk | Log warn+ only, or sample; one sink; `SystemMaxUse=` for journald |
 | 7 | **Studio / analytics full scans** — *code review* | Synchronous SQLite aggregates over `plays`/`scores`/`users` every 30–60 s while the page is open | `plays` beyond ~1 M rows (tens of ms per query, blocking the loop) | CPU (blocking) | Daily-stats table maintained on write |
@@ -767,9 +784,9 @@ Answers to the questions asked, grounded in §11–14.
 
 **What happens if 500 people start karaoke simultaneously?** Today: ~6–10 % of them get an error or a hung download (measured: 40 of 601 streams failed at the 1,024-fd limit; nginx's 768-connection default would bite slightly earlier), the rest start within a few seconds; Node CPU peaks at 100 % for a minute; 5 GB leaves the droplet in about two minutes, which a 1 Gbit/s port can do. After the "Now" fixes (fds, nginx limits, audio served by nginx with `sendfile`): all 500 start, each initially gets ~250 KB/s (enough for 256 kbit/s playback), CPU stays under 30 %. With Cloudflare edge caching of the songs, the droplet serves the file once per song per edge and the rest is Cloudflare's bandwidth.
 
-**What happens if a viral post sends thousands of visitors?** The landing and song pages are static HTML from nginx (prerendered) and the JS bundle, so **reading** scales to thousands per minute on one core, especially with Cloudflare caching static assets (it does by default for `.js/.css/.woff2/.png`). The cliff is **sign-ups: ~3 per second** saturate bcrypt, after which everyone — including existing users — waits seconds per request; and if Cloudflare is proxied without the real-IP fix, the auth rate limiter will start returning "Too many attempts" to innocent people after ten failed logins per edge IP. Fix S-1 and switch to native bcrypt before any marketing push. Sing-alongs from a viral moment then become a bandwidth cost question (10 MB per song).
+**What happens if a viral post sends thousands of visitors?** The landing and song pages are static HTML from nginx (prerendered) and the JS bundle, so **reading** scales to thousands per minute on one core, especially with Cloudflare caching static assets (it does by default for `.js/.css/.woff2/.png`). The cliff is **sign-ups: ~3 per second** saturate bcrypt, after which everyone — including existing users — waits seconds per request; and because Cloudflare is in front without the real-IP fix, the auth rate limiter will start returning "Too many attempts" to innocent people after ten failed logins per edge IP. Fix S-1 and switch to native bcrypt before any marketing push. Sing-alongs from a viral moment then become a bandwidth cost question (10 MB per song).
 
-**Which services scale automatically today?** None. There is no autoscaling, no CDN for audio, no queue. Cloudflare (if proxied) already absorbs static-asset traffic and DDoS noise.
+**Which services scale automatically today?** None. There is no autoscaling, no CDN for audio, no queue. Cloudflare (confirmed in front) already absorbs static-asset traffic and DDoS noise.
 
 **Which cannot scale?** The single Node process (one core), SQLite (one writer, one machine), the local disk (audio, DB, logs, backups on one volume), the founder's PC (the only place songs are processed), and the global one-job lock.
 
@@ -829,7 +846,7 @@ Goal: detect growth and faults before users do, with tools that cost nothing. Th
 ### 16.3 How to wire it cheaply
 
 1. Add `/api/health/deep` (owner token or localhost only): DB `SELECT 1`, free disk, newest backup age, fd count, event-loop max, job queue. Return 503 when any threshold is critical.
-2. Point the external uptime monitor at it (localhost-only check via a cron `curl` that posts to Telegram/Resend on failure).
+2. Point the external uptime monitor at it (localhost-only check via a cron `curl` that posts to Telegram/Resend on failure). If the monitor runs from a cloud IP, allow it in Cloudflare's WAF / Bot Fight Mode — the audit's own probe from a datacenter IP was answered 403 by the edge (§3.4).
 3. Ship logs to nothing new: keep pino, but log only `warn+` and slow requests (≥ 500 ms) at `info`; let journald own retention (`SystemMaxUse=1G`).
 4. Keep the Studio as the human view; the weekly digest script already exists — add the alert counts to it.
 
@@ -870,12 +887,13 @@ Consolidated list. "Measured" = reproduced on the isolated instance; "Code" = co
 | B-24 | Low | `POST /api/plays` and `/api/scores` accept any `songId`, unlimited | Measured RL-06/07; junk songs appeared in the owner's "top songs" | Analytics pollution, table growth | Validate + per-account limit | Soon |
 | B-25 | Low | `.env.example` lacks 13 variables the server reads; `DEPLOY.md` has the wrong email domain | Measured diff | A fresh deploy from the docs is incomplete | Update docs | Soon |
 | B-26 | Medium (unverified) | `npm run build` on the droplet opens the production database through the prerender; run as root it can leave root-owned WAL/SHM files | Code (`prerender.mjs:68-73`, runbook) | Service loses write access after a deploy | Build as the service user; or prerender from a JSON export | Now (verify) |
-| B-27 | **High** (conditional) | Rate limiters key on Cloudflare edge IPs if the zone is proxied (= S-1) | §3.4 evidence | Site-wide login lockouts as traffic grows | Real-IP from `CF-Connecting-IP` | Now (verify) |
+| B-27 | **High** | Rate limiters key on Cloudflare edge IPs: the zone is proxied (DNS-confirmed) and the repository has no real-IP handling (= S-1) | §3.4 DNS + `deploy/nginx.conf` | Site-wide login lockouts as traffic grows | Real IP from `CF-Connecting-IP` in nginx | Now |
 | B-28 | Low (suspected) | `changeAudioMode` sets `currentTime` right after `load()`; Safari ignores it before metadata → the song restarts from 0 on a mode switch on iOS | Code (`Player.jsx:924-928`) | iPhone singers lose their place when switching mixes | Set `currentTime` in `loadedmetadata` | Later |
 | B-29 | Low | Catalogue cache (30 s) is not invalidated on writes | Measured EDT-09 | Managers see "not there yet" for up to 30 s | Invalidate in `songStore` mutations | Later |
 | B-30 | Low | An address listed in `OWNER_EMAILS` becomes owner on registration without verifying the email | Code (`auth.js:139`, `db.js:390`) | Only if the list holds an unregistered address | Promote only verified accounts | Soon |
 | B-31 | Low | `Audio()` elements are dropped without `src=''`/`load()` on stop | Code (`Player.jsx:380-391`) | Browser may keep downloading after leaving | Release the element | Later |
 | B-32 | **High** | The service runs with the systemd default of 1,024 open files; every audio stream costs two (socket + file) | Unit file; measured in §11 (600-stream burst) | ~450 simultaneous song downloads exhaust the limit; accept errors follow | `LimitNOFILE=65536` in the unit (one line) | Now |
+| B-33 | Low | Upload limit of 150 MB (multer + nginx) exceeds Cloudflare's 100 MB request-body cap on the Free/Pro plans, so an upload over 100 MB dies at the edge with a Cloudflare 413 instead of the app's own error | `routes/dev.js:69`, `deploy/nginx.conf:36`, §3.4 | Confusing failure for a very long track; no data loss (today's songs are 6–13 MB) | Lower both limits to 100 MB, or state the ceiling in the upload UI | Later |
 
 
 ## 18. Technical Debt
@@ -905,7 +923,7 @@ Cost-aware: the current droplet is the right size for today's traffic. Nothing b
 
 1. **Serve audio from nginx, with cache headers.** `location /audio/ { alias /var/www/avazkhoneh/server/public/audio/; sendfile on; add_header Cache-Control "public, max-age=86400"; }`. Removes the first spike bottleneck, drops Node's CPU per song to zero, and lets Cloudflare cache songs at the edge (verify the plan's terms for audio). Rename files when a song's audio is replaced (or add `?v=`) so caches never serve stale audio.
 2. **`LimitNOFILE=65536`** in `deploy/avazkhoneh.service` (B-32).
-3. **Fix the rate-limiter identity behind Cloudflare** (S-1) or confirm the zone is not proxied.
+3. **Fix the rate-limiter identity behind Cloudflare** (S-1) — the zone is confirmed proxied (§3.4).
 4. **Guard permanent delete** (B-2) and **add a version check to lyric saves** (B-1).
 5. **Off-site backup**: nightly `rclone`/`s3cmd` of `server/data/backups`, `server/songs`, `server/dev-data/pitch-drafts` and `server/public/audio` to DigitalOcean Spaces ($5/month for 250 GB). Test one restore.
 6. **External uptime check + disk alert** (§16) — UptimeRobot on `/api/health` and a `df` cron that emails at 80 %.
@@ -981,8 +999,11 @@ Server suite: `cd server && npm test` → 305 passed. Client suite: `cd client &
 # Which commit is live, and is the tree dirty?
 cd /var/www/avazkhoneh && git rev-parse --short HEAD && git status --porcelain | head
 
-# Is Cloudflare proxying (affects rate limiting)?
-dig +short avazkhoneh.com; curl -sI https://avazkhoneh.com | grep -i -E 'cf-ray|server:'
+# Cloudflare proxying: answered from outside on the re-check (DNS -> Cloudflare anycast, §3.4).
+# What still needs the box: does the live nginx restore the real client IP? (S-1)
+grep -rn -E 'real_ip|CF-Connecting' /etc/nginx/ || echo 'no real-IP handling: S-1 confirmed'
+# Is audio cached at the edge after the cache-header fix? Is a bot rule answering 403?
+curl -sI "https://avazkhoneh.com/audio/$(ls /var/www/avazkhoneh/server/public/audio | head -1)" | grep -i -E 'cf-cache-status|cache-control|cf-ray|cf-mitigated'
 
 # Is JS compressed? Are security headers on the HTML origin?
 curl -sI -H 'Accept-Encoding: gzip' "https://avazkhoneh.com/$(curl -s https://avazkhoneh.com | grep -o 'assets/index-[^"]*\.js' | head -1)" | grep -i -E 'content-encoding|cache-control'
